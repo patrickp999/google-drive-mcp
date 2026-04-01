@@ -1,0 +1,233 @@
+# Implementation Plan: google-drive-mcp
+
+## Overview
+
+Fork and extract the upstream Google Drive MCP reference implementation, then extend it with Docs editing tools (`replace_text`, `add_comment`, `suggest_edit`), config-driven access control, and a full test suite.
+
+## Tasks
+
+- [x] 1. Fork, clone, and extract the upstream Google Drive MCP server
+  - Fork https://github.com/modelcontextprotocol/servers on GitHub
+  - Clone the fork with `git clone <url> .` into the existing local `google-drive-mcp` folder (no subfolder)
+  - Copy `src/gdrive/` contents to the project root; delete everything else from the cloned repo that is not needed
+  - Verify `package.json`, `tsconfig.json`, and `src/index.ts` are at the project root
+  - _Requirements: 8.1, 8.3, 8.4_
+
+- [ ] 2. Configure OAuth scopes, environment variable validation, and error handling wrapper
+  - [x] 2.1 Update OAuth scopes to `https://www.googleapis.com/auth/drive` and `https://www.googleapis.com/auth/documents`
+    - Edit the OAuth client initialization to include both scopes
+    - _Requirements: 1.1_
+  - [x] 2.2 Add startup env var validation that exits with a descriptive error if `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` is missing
+    - Identify which variable(s) are absent and include their names in the error message
+    - _Requirements: 1.2, 1.3_
+  - [ ] 2.3 Implement the tool error handling wrapper
+    - Create a `withErrorHandling(handler)` wrapper (or equivalent try/catch shell) that all tool handlers will execute inside
+    - On catch, return `{ content: [{ type: "text", text: "Error: <message>" }], isError: true }`
+    - Handle HTTP errors with format `"Google API error (<status>): <message>"`
+    - Handle network timeouts with `"Request timed out calling Google API"`
+    - This wrapper must be in place before any tool handlers are written in Tasks 6–11 so unhandled exceptions never crash the server process during development
+    - _Requirements: 9.1, 9.2, 9.3_
+  - [ ]* 2.4 Write property test for config parsing (Property 5 and Property 6)
+    - **Property 5: Config parsing reads env vars correctly**
+    - **Property 6: Missing required env vars cause startup error**
+    - **Validates: Requirements 1.2, 1.3**
+    - File: `src/__tests__/config.test.ts`
+    - Use `fc.record({ GOOGLE_CLIENT_ID: fc.string(), GOOGLE_CLIENT_SECRET: fc.string() })` for P5
+    - Use `fc.option(fc.string())` for each key to generate missing-var scenarios for P6
+    - 100 iterations each (`{ numRuns: 100 }`)
+
+- [ ] 3. Implement `parseIdList` and the Access Controller
+  - [ ] 3.1 Implement `parseIdList(raw: string | undefined): Set<string>` that splits on commas, trims whitespace, and filters empty entries
+    - Log a startup warning when both `ALLOWED_FOLDER_IDS` and `ALLOWED_DOC_IDS` are empty
+    - _Requirements: 2.1, 2.2, 2.5, 2.6_
+  - [ ]* 3.2 Write property test for ID list parsing (Property 1)
+    - **Property 1: ID list parsing strips whitespace and empty entries**
+    - **Validates: Requirements 2.1, 2.2, 2.6**
+    - File: `src/__tests__/config.test.ts`
+    - Use `fc.array(fc.string())` joined with varied separators and random surrounding whitespace
+    - 100 iterations (`{ numRuns: 100 }`)
+  - [ ] 3.3 Implement `AccessController` with `isAllowed`, `assertAllowed`, and `isFolderAllowed`
+    - `isAllowed`: check `ALLOWED_DOC_IDS` first, then fetch file `parents` from Drive API and check against `ALLOWED_FOLDER_IDS`
+    - `assertAllowed`: throw/return MCP error with message `"Access denied: <id> is not in the allowed folders or document list."` if not allowed
+    - `isFolderAllowed`: synchronous check against the in-memory `allowedFolderIds` set
+    - _Requirements: 2.3, 2.4, 2.7, 2.8, 2.9_
+  - [ ]* 3.4 Write property tests for access control logic (Property 2 and Property 3)
+    - **Property 2: Access check grants iff doc ID matches or parent folder matches**
+    - **Property 3: Access denied error message format**
+    - **Validates: Requirements 2.3, 2.4, 2.7, 2.8, 2.9**
+    - File: `src/__tests__/access-control.test.ts`
+    - Use `fc.string()` for IDs, `fc.set(fc.string())` for allowed sets, mock Drive API parent responses
+    - 100 iterations each (`{ numRuns: 100 }`)
+
+- [ ] 4. Implement OAuth token persistence and refresh
+  - [ ] 4.1 Ensure tokens are persisted to `~/.gdrive-mcp-token.json` (or `$TOKEN_PATH`) and loaded on startup with automatic refresh
+    - On refresh failure, print the authorization URL and prompt for re-authorization
+    - _Requirements: 1.4, 1.5, 1.6_
+  - [ ]* 4.2 Write property test for token persistence round-trip (Property 4)
+    - **Property 4: Token persistence round-trip**
+    - **Validates: Requirements 1.4**
+    - File: `src/__tests__/oauth.test.ts`
+    - Use `fc.record({ access_token: fc.string(), refresh_token: fc.string(), expiry_date: fc.integer(), token_type: fc.string(), scope: fc.string() })`
+    - 100 iterations (`{ numRuns: 100 }`)
+  - [ ]* 4.3 Write unit tests for OAuth refresh and re-auth flows
+    - Test: token refresh is called when `expiry_date` is in the past
+    - Test: auth URL is surfaced when token refresh fails
+    - File: `src/__tests__/oauth.test.ts`
+    - _Requirements: 1.5, 1.6_
+
+- [ ] 5. Checkpoint — ensure project compiles and existing tests pass
+  - Run `npx tsc --noEmit` to confirm no type errors
+  - Run `npx vitest --run` to confirm all tests written so far pass
+  - Ask the user if any questions arise before continuing
+
+- [ ] 6. Implement `search_files` tool
+  - [ ] 6.1 Implement the `search_files` tool handler
+    - If `folderId` provided: call `isFolderAllowed`, then search within that folder only
+    - If no `folderId`: build a Drive API query restricting to all `allowedFolderIds` using `'<id>' in parents OR ...`; add a code comment flagging the ~20-folder query length limit
+    - Return `{ id, name, mimeType, modifiedTime }[]`; return empty list with message when no results
+    - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6_
+  - [ ]* 6.2 Write property tests for `search_files` (Property 7 and Property 8)
+    - **Property 7: search_files result objects contain required fields**
+    - **Property 8: search_files query restricts to allowed folders**
+    - **Validates: Requirements 3.2, 3.5**
+    - File: `src/__tests__/tools/search-files.test.ts`
+    - P7: use `fc.record({ id: fc.string(), name: fc.string(), mimeType: fc.string(), modifiedTime: fc.string() })` for mock API responses
+    - P8: use `fc.set(fc.string({ minLength: 1 }))` for allowed folder ID sets; assert each ID appears in the constructed query
+    - 100 iterations each (`{ numRuns: 100 }`)
+  - [ ]* 6.3 Write unit tests for `search_files`
+    - Test: non-allowed `folderId` returns access denied
+    - Test: no `folderId` builds query spanning all allowed folders
+    - Test: Drive API returning empty list returns empty result with message
+    - File: `src/__tests__/tools/search-files.test.ts`
+    - _Requirements: 3.3, 3.4, 3.6_
+
+- [ ] 7. Implement `read_document` tool and plain text extraction
+  - [ ] 7.1 Implement the `read_document` tool handler
+    - Assert `documentId` is allowed via `assertAllowed`
+    - Call `docs.documents.get({ documentId })`
+    - Walk `body.content` structural elements to concatenate all `textRun.content` strings in document order
+    - Return `{ title: string; content: string }`
+    - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6_
+  - [ ]* 7.2 Write property test for plain text extraction (Property 9)
+    - **Property 9: Plain text extraction covers all text runs**
+    - **Validates: Requirements 4.4**
+    - File: `src/__tests__/tools/read-document.test.ts`
+    - Use a custom `fc.letrec` generator to produce random Docs API document structures with nested structural elements and `textRun` leaves
+    - Assert extracted text equals concatenation of all `textRun.content` values in order
+    - 100 iterations (`{ numRuns: 100 }`)
+  - [ ]* 7.3 Write unit tests for `read_document`
+    - Test: returns title and content for a known fixture document
+    - Test: access denied returned before any API call when `documentId` not allowed
+    - Test: Docs API error returns descriptive message including API error detail
+    - File: `src/__tests__/tools/read-document.test.ts`
+    - _Requirements: 4.2, 4.3, 4.5, 4.6_
+
+- [ ] 8. Implement `replace_text` tool
+  - [ ] 8.1 Implement the `replace_text` tool handler
+    - Assert `documentId` is allowed
+    - Call `docs.documents.batchUpdate` with a `replaceAllText` request
+    - Return `{ replacements: number }` sourced from `occurrencesChanged` in the API response
+    - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7_
+  - [ ]* 8.2 Write property test for replacement count (Property 10)
+    - **Property 10: replace_text returns correct replacement count**
+    - **Validates: Requirements 5.5**
+    - File: `src/__tests__/tools/replace-text.test.ts`
+    - Use `fc.integer({ min: 0 })` for mock `occurrencesChanged` values; assert returned count matches
+    - 100 iterations (`{ numRuns: 100 }`)
+  - [ ]* 8.3 Write unit tests for `replace_text`
+    - Test: returns zero replacements when `findText` is absent
+    - Test: access denied returned before any API call
+    - Test: Docs API error returns descriptive message
+    - File: `src/__tests__/tools/replace-text.test.ts`
+    - _Requirements: 5.3, 5.6, 5.7_
+
+- [ ] 9. Implement the two-step anchor helper shared by `add_comment` and `suggest_edit`
+  - [ ] 9.1 Implement `findFirstOccurrence(docContent: docs_v1.Schema$Document, text: string): { startIndex: number; endIndex: number } | null`
+    - Walk `body.content` structural elements to find the first occurrence of `text` within any `textRun.content`
+    - Return `startIndex` and `endIndex` from the structural element offsets
+    - Return `null` if not found
+    - _Requirements: 6.8, 7.8_
+  - [ ] 9.2 Implement `buildCommentAnchor(startIndex: number, endIndex: number): string`
+    - Encode the `CommentAnchor` structure as a JSON string for the Drive API `anchor` field
+    - Add a code comment noting the anchor format is based on available docs and should be validated against real API behavior during testing
+    - _Requirements: 6.4, 7.4_
+  - [ ]* 9.3 Write property test for first-occurrence anchor offsets (Property 11)
+    - **Property 11: Comment anchor uses first occurrence offsets**
+    - **Validates: Requirements 6.8, 7.8**
+    - File: `src/__tests__/tools/add-comment.test.ts`
+    - Generate random document structures containing the anchor string one or more times; assert returned offsets match the first occurrence
+    - 100 iterations (`{ numRuns: 100 }`)
+
+- [ ] 10. Implement `add_comment` tool
+  - [ ] 10.1 Implement the `add_comment` tool handler using the two-step anchor pattern
+    - Assert `documentId` is allowed
+    - Step 1: call `docs.documents.get` and use `findFirstOccurrence` to locate `anchorText`
+    - Return error `"Anchor text not found in document: '<anchorText>'"` if not found
+    - Step 2: call `drive.comments.create` with `anchor` from `buildCommentAnchor` and `content` as the comment body
+    - Return `{ commentId: string }`
+    - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8_
+  - [ ]* 10.2 Write unit tests for `add_comment`
+    - Test: returns error when `anchorText` not found in document
+    - Test: access denied returned before any API call
+    - Test: Drive API error returns descriptive message
+    - Test: returned `commentId` matches the Drive API response
+    - File: `src/__tests__/tools/add-comment.test.ts`
+    - _Requirements: 6.2, 6.3, 6.6, 6.7_
+
+- [ ] 11. Implement `suggest_edit` tool
+  - [ ] 11.1 Implement the `suggest_edit` tool handler using the same two-step anchor pattern
+    - Assert `documentId` is allowed
+    - Step 1: call `docs.documents.get` and use `findFirstOccurrence` to locate `originalText`
+    - Return error `"Anchor text not found in document: '<originalText>'"` if not found
+    - Step 2: call `drive.comments.create` with comment body `"Suggested edit: replace with '<suggestedText>'"` — do NOT call `batchUpdate`
+    - Return `{ commentId: string }`
+    - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 7.7, 7.8, 7.9_
+  - [ ]* 11.2 Write property tests for `suggest_edit` (Property 12 and Property 13)
+    - **Property 12: suggest_edit comment body format**
+    - **Property 13: suggest_edit leaves document content unmodified**
+    - **Validates: Requirements 7.4, 7.5**
+    - File: `src/__tests__/tools/suggest-edit.test.ts`
+    - P12: use `fc.string()` for `suggestedText`; assert comment body equals `"Suggested edit: replace with '<suggestedText>'"` exactly
+    - P13: use `fc.record({...})` for valid invocation inputs with mocked APIs; assert `batchUpdate` is never called
+    - 100 iterations each (`{ numRuns: 100 }`)
+  - [ ]* 11.3 Write unit tests for `suggest_edit`
+    - Test: returns error when `originalText` not found
+    - Test: access denied returned before any API call
+    - Test: `batchUpdate` is never called (document stays unmodified)
+    - Test: Drive API error returns descriptive message
+    - File: `src/__tests__/tools/suggest-edit.test.ts`
+    - _Requirements: 7.2, 7.3, 7.5, 7.7, 7.9_
+
+- [ ] 12. Wire all tools into the MCP server
+  - [ ] 12.1 Register all five tools with the MCP SDK with full JSON Schema `inputSchema` definitions
+    - Wire `ListToolsRequestSchema` and `CallToolRequestSchema` handlers
+    - Ensure all tool handlers execute inside the `withErrorHandling` wrapper from Task 2.3
+    - Return MCP-compliant `MethodNotFound` error for unknown tool names
+    - Use `StdioServerTransport` for stdio communication
+    - _Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 9.4_
+  - [ ]* 12.2 Write property test for API error handling (Property 14)
+    - **Property 14: API errors are caught and returned as structured messages**
+    - **Validates: Requirements 9.1, 9.2, 9.3**
+    - File: `src/__tests__/error-handling.test.ts`
+    - Use `fc.oneof(...)` to generate HTTP errors and network errors across all five tools; assert `isError: true` and no unhandled exception
+    - 100 iterations (`{ numRuns: 100 }`)
+  - [ ]* 12.3 Write unit tests for MCP registration and error routing
+    - Test: all five tools appear in `ListTools` response
+    - Test: each tool definition has a valid JSON Schema `inputSchema`
+    - Test: unknown tool name returns MCP `MethodNotFound` error
+    - File: `src/__tests__/mcp-registration.test.ts`
+    - _Requirements: 8.2, 8.5, 9.4_
+
+- [ ] 13. Final checkpoint — full test suite and build verification
+  - Run `npx tsc` to compile to `dist/index.js`
+  - Run `npx vitest --run` to confirm all tests pass (run `mcp-registration.test.ts` first)
+  - Ensure all five tools are reachable via the compiled entry point
+  - Ask the user if any questions arise before considering the feature complete
+
+## Notes
+
+- Tasks marked with `*` are optional and can be skipped for faster MVP
+- The Drive API comment anchor format (`CommentAnchor`) is based on available documentation and must be validated against real API behavior during task 9 — treat it as a starting point, not a contract
+- Property tests use `fast-check` with `{ numRuns: 100 }` per property
+- Test runner is `vitest --run` (single-pass, no watch mode)
+- `mcp-registration.test.ts` should run before all other test files in CI to surface wiring failures early
