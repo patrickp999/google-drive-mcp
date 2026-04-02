@@ -4,3 +4,4 @@ dist/
 .env.*
 *.token.json
 .DS_Store
+.kiro/

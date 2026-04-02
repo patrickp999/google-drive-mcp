@@ -9,16 +9,31 @@ export async function readDocument(
   accessController: AccessController
 ): Promise<CallToolResult> {
   return withErrorHandling(async () => {
-    await accessController.assertAllowed(args.documentId);
+    await accessController.assertNativeDoc(args.documentId);
 
     const doc = await docsClient.documents.get({ documentId: args.documentId });
 
-    let content = "";
-    for (const element of doc.data.body?.content ?? []) {
-      for (const pe of element.paragraph?.elements ?? []) {
-        content += pe.textRun?.content ?? "";
+    function collectText(elements: docs_v1.Schema$StructuralElement[]): string {
+      let result = "";
+      for (const element of elements) {
+        if (element.paragraph !== undefined) {
+          for (const pe of element.paragraph.elements ?? []) {
+            result += pe.textRun?.content ?? "";
+          }
+        } else if (element.table !== undefined) {
+          for (const row of element.table.tableRows ?? []) {
+            for (const cell of row.tableCells ?? []) {
+              result += collectText(cell.content ?? []);
+            }
+          }
+        } else if (element.tableOfContents !== undefined) {
+          result += collectText(element.tableOfContents.content ?? []);
+        }
       }
+      return result;
     }
+
+    const content = collectText(doc.data.body?.content ?? []);
 
     const title = doc.data.title ?? "";
 

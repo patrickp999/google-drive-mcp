@@ -11,7 +11,7 @@ export async function suggestEdit(
   accessController: AccessController
 ): Promise<CallToolResult> {
   return withErrorHandling(async () => {
-    await accessController.assertAllowed(args.documentId);
+    await accessController.assertNativeDoc(args.documentId);
 
     // Step 1: Fetch doc and locate original text
     const doc = await docsClient.documents.get({ documentId: args.documentId });

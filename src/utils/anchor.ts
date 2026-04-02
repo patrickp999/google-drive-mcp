@@ -1,20 +1,48 @@
 import { docs_v1 } from "googleapis";
 
+function normalise(s: string): string {
+  return s.replace(/[\u200B\u200C\u200D\uFEFF\u00AD]/g, "").toLowerCase();
+}
+
+function searchElements(
+  elements: docs_v1.Schema$StructuralElement[],
+  text: string
+): { startIndex: number; endIndex: number } | null {
+  const normText = normalise(text);
+  for (const element of elements) {
+    if (element.paragraph !== undefined) {
+      for (const pe of element.paragraph.elements ?? []) {
+        const textRun = pe.textRun;
+        if (textRun?.content !== undefined) {
+          const normRun = normalise(textRun.content ?? "");
+          const idx = normRun.indexOf(normText);
+          if (idx >= 0) {
+            const startIndex = pe.startIndex! + idx;
+            const endIndex = startIndex + text.length;
+            return { startIndex, endIndex };
+          }
+        }
+      }
+    } else if (element.table !== undefined) {
+      for (const row of element.table.tableRows ?? []) {
+        for (const cell of row.tableCells ?? []) {
+          const result = searchElements(cell.content ?? [], text);
+          if (result !== null) return result;
+        }
+      }
+    } else if (element.tableOfContents !== undefined) {
+      const result = searchElements(element.tableOfContents.content ?? [], text);
+      if (result !== null) return result;
+    }
+  }
+  return null;
+}
+
 export function findFirstOccurrence(
   doc: docs_v1.Schema$Document,
   text: string
 ): { startIndex: number; endIndex: number } | null {
-  for (const element of doc.body?.content ?? []) {
-    for (const pe of element.paragraph?.elements ?? []) {
-      const textRun = pe.textRun;
-      if (textRun?.content?.includes(text)) {
-        const startIndex = pe.startIndex! + textRun.content!.indexOf(text);
-        const endIndex = startIndex + text.length;
-        return { startIndex, endIndex };
-      }
-    }
-  }
-  return null;
+  return searchElements(doc.body?.content ?? [], text);
 }
 
 // NOTE: The Drive API comment anchor format is poorly documented and may behave

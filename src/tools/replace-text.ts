@@ -9,7 +9,7 @@ export async function replaceText(
   accessController: AccessController
 ): Promise<CallToolResult> {
   return withErrorHandling(async () => {
-    await accessController.assertAllowed(args.documentId);
+    await accessController.assertNativeDoc(args.documentId);
 
     const res = await docsClient.documents.batchUpdate({
       documentId: args.documentId,

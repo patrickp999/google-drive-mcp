@@ -35,7 +35,7 @@ export class AccessController {
     try {
       const res = await this.driveClient.files.get({
         fileId: id,
-        fields: "parents",
+        fields: "id,name,mimeType,parents",
       });
       const parents: string[] = res.data.parents ?? [];
       if (parents.some((p) => allowedFolderIds.has(p))) {
@@ -58,6 +58,82 @@ export class AccessController {
     if (!allowed) {
       throw new Error(
         `Access denied: ${id} is not in the allowed folders or document list.`,
+      );
+    }
+  }
+
+  /**
+   * Checks access AND verifies the file is a native Google Doc.
+   * Throws if access is denied or if the file is not a native Google Doc.
+   * Makes a single Drive API call to fetch id, name, mimeType, and parents.
+   */
+  async assertNativeDoc(id: string): Promise<void> {
+    const { allowedDocIds, allowedFolderIds } = this.config;
+
+    // No-restriction mode: skip folder check but still verify MIME type
+    const skipFolderCheck = allowedDocIds.size === 0 && allowedFolderIds.size === 0;
+
+    // Direct doc ID match skips folder check
+    const directMatch = allowedDocIds.has(id);
+
+    let name: string = id;
+    let mimeType: string | undefined;
+
+    if (!skipFolderCheck && !directMatch) {
+      // Fetch id, name, mimeType, parents in one call
+      try {
+        const res = await this.driveClient.files.get({
+          fileId: id,
+          fields: "id,name,mimeType,parents",
+        });
+        name = res.data.name ?? id;
+        mimeType = res.data.mimeType ?? undefined;
+        const parents: string[] = res.data.parents ?? [];
+
+        if (!parents.some((p) => allowedFolderIds.has(p))) {
+          throw new Error(
+            `Access denied: ${id} is not in the allowed folders or document list.`,
+          );
+        }
+      } catch (err) {
+        if (err instanceof Error && err.message.startsWith("Access denied")) {
+          throw err;
+        }
+        console.error(`[AccessController] Drive API error for ${id}:`, err);
+        throw new Error(
+          `Access denied: ${id} is not in the allowed folders or document list.`,
+        );
+      }
+    } else if (!skipFolderCheck && directMatch) {
+      // Still need name/mimeType — fetch them
+      try {
+        const res = await this.driveClient.files.get({
+          fileId: id,
+          fields: "id,name,mimeType,parents",
+        });
+        name = res.data.name ?? id;
+        mimeType = res.data.mimeType ?? undefined;
+      } catch {
+        // If we can't fetch metadata, proceed without MIME check
+        return;
+      }
+    } else {
+      // No-restriction mode — still fetch MIME type
+      try {
+        const res = await this.driveClient.files.get({
+          fileId: id,
+          fields: "id,name,mimeType,parents",
+        });
+        name = res.data.name ?? id;
+        mimeType = res.data.mimeType ?? undefined;
+      } catch {
+        return;
+      }
+    }
+
+    if (mimeType !== undefined && mimeType !== "application/vnd.google-apps.document") {
+      throw new Error(
+        `The file '${name}' (ID: ${id}) is not a native Google Doc. It may be a shortcut or link to a document stored elsewhere in your Drive. To use this file with the MCP server, open it in Google Drive, go to File → Make a copy, and save the copy directly into your MCP Accessible folder. Then use the copied file's ID instead.`,
       );
     }
   }
