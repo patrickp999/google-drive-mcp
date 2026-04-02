@@ -1,41 +1,25 @@
-import { docs_v1, drive_v3 } from "googleapis";
+import { drive_v3 } from "googleapis";
 import { AccessController } from "../access-controller.js";
 import { withErrorHandling } from "../utils/error-handler.js";
-import { findFirstOccurrence, buildCommentAnchor } from "../utils/anchor.js";
 import { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 export async function addComment(
   args: { documentId: string; content: string; anchorText: string },
-  docsClient: docs_v1.Docs,
   driveClient: drive_v3.Drive,
   accessController: AccessController
 ): Promise<CallToolResult> {
   return withErrorHandling(async () => {
     await accessController.assertNativeDoc(args.documentId);
 
-    // Step 1: Fetch doc and locate anchor text
-    const doc = await docsClient.documents.get({ documentId: args.documentId });
-    const occurrence = findFirstOccurrence(doc.data, args.anchorText);
+    // Note: Google Drive API anchor fields are ignored for Google Workspace files.
+    // Anchored comments always appear as "Original content deleted" regardless of
+    // anchor format used. We prepend the anchorText as context in the comment body instead.
+    const body = `Re: "${args.anchorText}"\n\n${args.content}`;
 
-    if (!occurrence) {
-      return {
-        content: [{ type: "text", text: `Anchor text not found in document: '${args.anchorText}'` }],
-        isError: true,
-      };
-    }
-
-    // Step 2: Create comment anchored to the located text range
     const res = await driveClient.comments.create({
       fileId: args.documentId,
       fields: "id",
-      requestBody: {
-        content: args.content,
-        anchor: buildCommentAnchor(occurrence.startIndex, occurrence.endIndex),
-        quotedFileContent: {
-          mimeType: "text/plain",
-          value: args.anchorText,
-        },
-      },
+      requestBody: { content: body },
     });
 
     return {

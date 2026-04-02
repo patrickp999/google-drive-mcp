@@ -64,14 +64,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case "add_comment":
       return addComment(
         args as { documentId: string; content: string; anchorText: string },
-        docsClient,
         driveClient,
         accessController,
       );
     case "suggest_edit":
       return suggestEdit(
         args as { documentId: string; originalText: string; suggestedText: string },
-        docsClient,
         driveClient,
         accessController,
       );
