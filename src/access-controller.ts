@@ -41,8 +41,9 @@ export class AccessController {
       if (parents.some((p) => allowedFolderIds.has(p))) {
         return true;
       }
-    } catch {
-      // If we can't fetch the file, deny access
+    } catch (err) {
+      // If we can't fetch the file, log the error and deny access
+      console.error(`[AccessController] Drive API error fetching parents for ${id}:`, err);
       return false;
     }
 
