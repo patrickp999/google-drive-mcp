@@ -11,7 +11,13 @@ export async function searchFiles(
   config: Config
 ): Promise<CallToolResult> {
   return withErrorHandling(async () => {
-    const userQuery = args.query;
+    const userQuery = args.query.trim();
+    // Always start with trashed = false, then optionally append the user's search terms.
+    const baseParts: string[] = ["trashed = false"];
+    if (userQuery) {
+      baseParts.push(`(${userQuery})`);
+    }
+
     let query: string;
 
     if (args.folderId) {
@@ -27,16 +33,16 @@ export async function searchFiles(
           isError: true,
         };
       }
-      query = `(${userQuery}) and '${folderId}' in parents and trashed = false`;
+      query = [...baseParts, `'${folderId}' in parents`].join(" and ");
     } else if (config.allowedFolderIds.size > 0) {
       // NOTE: Drive API has query length limits (~1000 chars). Folder IDs are ~33 chars each,
       // so queries spanning >~20 folders may be rejected. Fine for personal use but flag for future.
       const folderClauses = [...config.allowedFolderIds]
         .map((id) => `'${id}' in parents`)
         .join(" or ");
-      query = `(${userQuery}) and (${folderClauses}) and trashed = false`;
+      query = [...baseParts, `(${folderClauses})`].join(" and ");
     } else {
-      query = `(${userQuery}) and trashed = false`;
+      query = baseParts.join(" and ");
     }
 
     const res = await driveClient.files.list({
@@ -70,11 +76,20 @@ export async function searchFiles(
 
 export const searchFilesToolDefinition = {
   name: "search_files",
-  description: "Search for files within allowed Google Drive folders",
+  description:
+    "Search for files within allowed Google Drive folders. Use Drive API query syntax for the query field (e.g. \"name contains 'report'\" or \"mimeType = 'application/pdf'\"). Pass an empty string to list all files.",
   inputSchema: {
     type: "object",
     properties: {
-      query: { type: "string", description: "Search query" },
+      query: {
+        type: "string",
+        description:
+          "Drive API query string. Uses Google Drive query syntax — NOT glob patterns or SQL. " +
+          "Examples: \"name contains 'report'\" | \"mimeType = 'application/pdf'\" | \"modifiedTime > '2024-01-01'\" | \"fullText contains 'budget'\". " +
+          "Pass an empty string to list all files with no filter. " +
+          "Operators: contains, =, !=, <, <=, >, >=, in, and, or, not. " +
+          "Do NOT use wildcards like '*' or '%' — they are invalid and will cause a 400 error.",
+      },
       folderId: {
         type: "string",
         description:
