@@ -2,6 +2,9 @@ import { drive_v3 } from "googleapis";
 import { Config } from "./utils/config.js";
 
 export class AccessController {
+  /** Cache: folder/file ID → whether it's under an allowed root */
+  private traversalCache = new Map<string, boolean>();
+
   constructor(
     private config: Config,
     private driveClient: drive_v3.Drive,
@@ -10,13 +13,14 @@ export class AccessController {
   /**
    * Returns true if the given file/doc ID is permitted.
    *
-   * No-restriction mode: if both allowlists are empty, all access is granted
-   * (a startup warning is already logged by loadConfig).
+   * No-restriction mode: if both allowlists are empty, all access is granted.
    *
    * Otherwise checks in order:
    *   1. ID is in allowedDocIds → grant
-   *   2. Any parent folder is in allowedFolderIds → grant
-   *   3. Deny
+   *   2. ID is in allowedFolderIds → grant
+   *   3. Recursive parent traversal — walk up the parent chain via Drive API
+   *      until an allowed folder is found or the chain is exhausted
+   *   4. Deny
    */
   async isAllowed(id: string): Promise<boolean> {
     const { allowedDocIds, allowedFolderIds } = this.config;
@@ -31,22 +35,79 @@ export class AccessController {
       return true;
     }
 
-    // 2. Parent folder match — fetch parents from Drive API
-    try {
-      const res = await this.driveClient.files.get({
-        fileId: id,
-        fields: "id,name,mimeType,parents",
-      });
-      const parents: string[] = res.data.parents ?? [];
-      if (parents.some((p) => allowedFolderIds.has(p))) {
-        return true;
-      }
-    } catch (err) {
-      // If we can't fetch the file, log the error and deny access
-      console.error(`[AccessController] Drive API error fetching parents for ${id}:`, err);
-      return false;
+    // 2. Direct folder ID match
+    if (allowedFolderIds.has(id)) {
+      return true;
     }
 
+    // 3. Recursive parent traversal
+    return this.isDescendantOfAllowed(id);
+  }
+
+  /**
+   * Walks the parent chain of `id` via Drive API until an allowed folder
+   * is found or the chain is exhausted. Uses a visited set to prevent
+   * infinite loops and an instance-level cache to avoid redundant API calls.
+   */
+  private async isDescendantOfAllowed(id: string): Promise<boolean> {
+    const { allowedFolderIds } = this.config;
+    const visited = new Set<string>();
+    const toCheck: string[] = [id];
+
+    while (toCheck.length > 0) {
+      const current = toCheck.pop()!;
+
+      if (visited.has(current)) continue;
+      visited.add(current);
+
+      // Check cache
+      if (this.traversalCache.has(current)) {
+        const cached = this.traversalCache.get(current)!;
+        if (cached) return true;
+        continue; // cached as denied — skip but keep checking other branches
+      }
+
+      // Direct match on allowed folders
+      if (allowedFolderIds.has(current)) {
+        // Cache all visited nodes as allowed
+        for (const v of visited) {
+          this.traversalCache.set(v, true);
+        }
+        return true;
+      }
+
+      // Fetch parents from Drive API
+      try {
+        const res = await this.driveClient.files.get({
+          fileId: current,
+          fields: "parents",
+        });
+        const parents: string[] = res.data.parents ?? [];
+
+        if (parents.length === 0) {
+          // Reached root with no match — cache this node as denied
+          this.traversalCache.set(current, false);
+          continue;
+        }
+
+        for (const parent of parents) {
+          if (!visited.has(parent)) {
+            toCheck.push(parent);
+          }
+        }
+      } catch (err) {
+        console.error(`[AccessController] Drive API error fetching parents for ${current}:`, err);
+        this.traversalCache.set(current, false);
+        continue;
+      }
+    }
+
+    // Exhausted chain without finding an allowed folder — cache all as denied
+    for (const v of visited) {
+      if (!this.traversalCache.has(v)) {
+        this.traversalCache.set(v, false);
+      }
+    }
     return false;
   }
 
@@ -64,71 +125,27 @@ export class AccessController {
 
   /**
    * Checks access AND verifies the file is a native Google Doc.
-   * Throws if access is denied or if the file is not a native Google Doc.
-   * Makes a single Drive API call to fetch id, name, mimeType, and parents.
+   * Delegates access check to isAllowed (recursive traversal),
+   * then verifies MIME type separately.
    */
   async assertNativeDoc(id: string): Promise<void> {
-    const { allowedDocIds, allowedFolderIds } = this.config;
+    // Access check via recursive isAllowed
+    await this.assertAllowed(id);
 
-    // No-restriction mode: skip folder check but still verify MIME type
-    const skipFolderCheck = allowedDocIds.size === 0 && allowedFolderIds.size === 0;
-
-    // Direct doc ID match skips folder check
-    const directMatch = allowedDocIds.has(id);
-
+    // MIME type check — fetch file metadata
     let name: string = id;
     let mimeType: string | undefined;
 
-    if (!skipFolderCheck && !directMatch) {
-      // Fetch id, name, mimeType, parents in one call
-      try {
-        const res = await this.driveClient.files.get({
-          fileId: id,
-          fields: "id,name,mimeType,parents",
-        });
-        name = res.data.name ?? id;
-        mimeType = res.data.mimeType ?? undefined;
-        const parents: string[] = res.data.parents ?? [];
-
-        if (!parents.some((p) => allowedFolderIds.has(p))) {
-          throw new Error(
-            `Access denied: ${id} is not in the allowed folders or document list.`,
-          );
-        }
-      } catch (err) {
-        if (err instanceof Error && err.message.startsWith("Access denied")) {
-          throw err;
-        }
-        console.error(`[AccessController] Drive API error for ${id}:`, err);
-        throw new Error(
-          `Access denied: ${id} is not in the allowed folders or document list.`,
-        );
-      }
-    } else if (!skipFolderCheck && directMatch) {
-      // Still need name/mimeType — fetch them
-      try {
-        const res = await this.driveClient.files.get({
-          fileId: id,
-          fields: "id,name,mimeType,parents",
-        });
-        name = res.data.name ?? id;
-        mimeType = res.data.mimeType ?? undefined;
-      } catch {
-        // If we can't fetch metadata, proceed without MIME check
-        return;
-      }
-    } else {
-      // No-restriction mode — still fetch MIME type
-      try {
-        const res = await this.driveClient.files.get({
-          fileId: id,
-          fields: "id,name,mimeType,parents",
-        });
-        name = res.data.name ?? id;
-        mimeType = res.data.mimeType ?? undefined;
-      } catch {
-        return;
-      }
+    try {
+      const res = await this.driveClient.files.get({
+        fileId: id,
+        fields: "id,name,mimeType",
+      });
+      name = res.data.name ?? id;
+      mimeType = res.data.mimeType ?? undefined;
+    } catch {
+      // If we can't fetch metadata, skip MIME check (access already validated)
+      return;
     }
 
     if (mimeType !== undefined && mimeType !== "application/vnd.google-apps.document") {
@@ -139,9 +156,18 @@ export class AccessController {
   }
 
   /**
-   * Synchronous check — returns true if folderId is in the allowedFolderIds set.
+   * Async check — returns true if folderId is in allowedFolderIds or is a
+   * descendant of an allowed folder via recursive parent traversal.
    */
-  isFolderAllowed(folderId: string): boolean {
-    return this.config.allowedFolderIds.has(folderId);
+  async isFolderAllowed(folderId: string): Promise<boolean> {
+    const { allowedFolderIds } = this.config;
+
+    // Direct match — fast path
+    if (allowedFolderIds.has(folderId)) {
+      return true;
+    }
+
+    // Recursive parent traversal
+    return this.isDescendantOfAllowed(folderId);
   }
 }

@@ -7,14 +7,18 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that gi
 - Search files across your Drive using Google Drive query syntax
 - Read Google Docs as plain text
 - Replace text, add comments, and suggest edits in Docs
-- **Access control via folder and document allowlists** — restrict the AI to only the files and folders you explicitly permit
+- Full comment management — list, get, reply, resolve, and delete comments
+- File and folder management — create folders, copy, rename, and trash files
+- Create new Google Docs with optional initial content
+- Export Google Docs as PDFs
+- **Access control via folder and document allowlists** — restrict the AI to only the files and folders you explicitly permit, with recursive subfolder support
 
 ## Access Control
 
 This server supports two environment variables to limit what the AI can access:
 
-- `ALLOWED_FOLDER_IDS` — comma-separated list of Google Drive folder IDs. The AI can only search and access files within these folders.
-- `ALLOWED_DOC_IDS` — comma-separated list of specific Google Doc IDs the AI is allowed to read and edit.
+- `ALLOWED_FOLDER_IDS` — comma-separated list of Google Drive folder IDs. The AI can only search and access files within these folders **and any subfolders** (recursive parent-chain traversal).
+- `ALLOWED_DOC_IDS` — comma-separated list of specific Google Doc IDs the AI is allowed to read and edit. These bypass folder checks entirely.
 
 If both are left empty, the server operates in **no-restriction mode** and can access your entire Drive (a warning is logged at startup).
 
@@ -23,12 +27,14 @@ If both are left empty, the server operates in **no-restriction mode** and can a
 The ID is the last segment of the URL when you open a folder or file in Google Drive:
 
 ```
-https://drive.google.com/drive/folders/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs
+https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUvWxYz012345
                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                                         This is the folder ID
 ```
 
 ## Tools
+
+### Document Tools
 
 | Tool | Description |
 |------|-------------|
@@ -37,6 +43,32 @@ https://drive.google.com/drive/folders/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs
 | `replace_text` | Find and replace text within a Google Doc. |
 | `add_comment` | Add a comment anchored to specific text in a Google Doc. |
 | `suggest_edit` | Propose a text change as a suggestion in a Google Doc. |
+
+### Comment Management
+
+| Tool | Description |
+|------|-------------|
+| `list_comments` | List all comments on a document including content, author, creation time, and resolved status. |
+| `get_comment` | Get a specific comment and its full reply thread by comment ID. |
+| `reply_to_comment` | Add a reply to an existing comment thread. |
+| `resolve_comment` | Mark a comment thread as resolved. |
+| `delete_comment` | Delete a comment by comment ID. |
+
+### File & Folder Management
+
+| Tool | Description |
+|------|-------------|
+| `create_folder` | Create a new folder in Google Drive inside an allowed parent folder. |
+| `copy_file` | Copy an existing file into a specified folder with a new name. |
+| `rename_file` | Rename a file or folder by ID. |
+| `delete_file` | Move a file to trash (soft delete, recoverable from Trash). |
+
+### Document Creation & Export
+
+| Tool | Description |
+|------|-------------|
+| `create_document` | Create a new Google Doc with a given name and optional initial content in a specified folder. |
+| `export_as_pdf` | Export a Google Doc as a PDF saved into a specified Google Drive folder. |
 
 ### Search Query Syntax
 
